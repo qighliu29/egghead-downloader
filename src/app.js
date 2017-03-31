@@ -161,7 +161,7 @@ async function getVideoData () {
             return {url, filename}
           })[0]
       } else {
-        videoData = parseLessonPage(source)
+        videoData = await parseLessonPage(source)
       }
 
       // process the lesson page
@@ -221,8 +221,8 @@ async function getVideoData () {
 // fetches the lesson page and calls parseLessonPage on it
 function processLessonURL (url) {
   return new Promise(async (resolve, reject) => {
-    rp(url).then((source) => {
-      const videoData = parseLessonPage(source)
+    rp(url).then(async (source) => {
+      const videoData = await parseLessonPage(source)
       if (videoData) {
         resolve(videoData)
       } else {
@@ -234,14 +234,65 @@ function processLessonURL (url) {
   })
 }
 
+//from: 
+//http://stackoverflow.com/questions/10574520/extract-json-from-text
+function extractJSON(str) {
+    var firstOpen, firstClose, candidate;
+    firstOpen = str.indexOf('{', firstOpen + 1);
+    do {
+        firstClose = str.lastIndexOf('}');
+        console.log('firstOpen: ' + firstOpen, 'firstClose: ' + firstClose);
+        if(firstClose <= firstOpen) {
+            return null;
+        }
+        do {
+            candidate = str.substring(firstOpen, firstClose + 1);
+            console.log('candidate: ' + candidate);
+            try {
+                var res = JSON.parse(candidate);
+                console.log('...found');
+                return [res, firstOpen, firstClose + 1];
+            }
+            catch(e) {
+                console.log('...failed');
+            }
+            firstClose = str.substr(0, firstClose).lastIndexOf('}');
+        } while(firstClose > firstOpen);
+        firstOpen = str.indexOf('{', firstOpen + 1);
+    } while(firstOpen != -1);
+}
+
 // parses the lesson page, returns the video data if found.
-function parseLessonPage (source) {
-  const re = /<meta itemprop="name" content="([^"]+?)".+?<meta itemprop="contentURL" content="http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin"/
-  const result = re.exec(source)
+async function parseLessonPage (source) {
+  const reFile = /<meta itemprop="name" content="([^"]+?)".+?<meta itemprop="contentURL" content="http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin"/
+  const result = reFile.exec(source)
+  var fileName = ""
   if (result) {
+    // return {
+    //   filename: result[1],
+    //   url: `https://embed-ssl.wistia.com/deliveries/${result[2]}/file.mp4`
+    // }
+    fileName = result[1]
+  }
+
+  const re = /<script charset="ISO-8859-1" src="(\/\/fast\.wistia\.com\/embed\/medias\/[a-z0-9]{10}\/metadata\.js)"><\/script>/
+  const reVideo = /"http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin"/
+  const metaJs = await rp("http:" + re.exec(source)[1])
+  var   mediaJson = JSON.parse(extractJSON(metaJs.slice(metaJs.indexOf('mediaJson'), metaJs.lastIndexOf('mediaJson')))[0])
+  var   videoId = "";
+  //try to find 'Original file'
+  for (let asset in mediaJson['assets']) {
+    if (asset['type'] == 'original' && asset['slug'] == 'original') {
+      videoId = reVideo.exec(asset['url'])[1]
+    }
+  }
+  if (videoId == "") {
+    console.log("No Original file with: " + fileName)
+  }
+  else {
     return {
-      filename: result[1],
-      url: `https://embed-ssl.wistia.com/deliveries/${result[2]}/file.mp4`
+      filename: fileName,
+      url: `https://embed-ssl.wistia.com/deliveries/${videoId}/file.mp4`
     }
   }
 }
