@@ -8,13 +8,14 @@ const PleasantProgress = require('pleasant-progress')
 const path = require('path')
 const fs = require('fs')
 const inquirer = require('inquirer')
+const cheerio = require('cheerio')
 
 let urlValue
 let outputDir
 let isPro = false
 const prompt = inquirer.createPromptModule()
 const progress = new PleasantProgress()
-const rp = requestPromise.defaults({jar: true})
+const rp = requestPromise.defaults({ jar: true })
 const SIGN_IN_URL = 'https://egghead.io/users/sign_in'
 
 program
@@ -42,7 +43,7 @@ if (!/egghead.io\/(lessons|series|playlists|courses)\//.test(urlValue)) {
 // await is only supported in functions (with the async keyword)
 doTheMagic()
 
-function fileExists (p) {
+function fileExists(p) {
   try {
     return fs.statSync(p).isFile()
   } catch (e) {
@@ -50,14 +51,14 @@ function fileExists (p) {
   }
 }
 
-async function getCSRFToken () {
+async function getCSRFToken() {
   const body = await rp(SIGN_IN_URL)
   const pattern = /<meta name="csrf-token" content="(.*)" \/>/
   const [, CSRFToken] = pattern.exec(body) || []
   return CSRFToken
 }
 
-async function authenticate (email, password) {
+async function authenticate(email, password) {
   const CSRFToken = await getCSRFToken()
   const options = {
     method: 'POST',
@@ -78,7 +79,7 @@ async function authenticate (email, password) {
   }
 }
 
-async function doTheMagic () {
+async function doTheMagic() {
   if (program.email) {
     if (program.password === true) {
       const { password } = await prompt({
@@ -108,10 +109,12 @@ async function doTheMagic () {
   const padLength = String(videos.length).length
   const padZeros = '0'.repeat(padLength)
   let i = 0
-  for (const {url, filename} of videos) {
+  for (const { url, filename, transcript, code } of videos) {
     i++
     let paddedCounter = `${padZeros}${i}`.slice(-padLength)
-    const p = path.join(outputDir, (program.count ? `${paddedCounter}-${filename}` : filename))
+    let subDir = path.join(outputDir, paddedCounter)
+    createSubDirectoryIfNeeded(subDir)
+    const p = path.join(subDir, (program.count ? `${paddedCounter}-${filename}` : filename))
     if (!program.force && fileExists(p)) {
       console.log(`File ${paddedCounter}-${filename} already exists, skip`)
       continue
@@ -129,6 +132,8 @@ async function doTheMagic () {
         })
         .pipe(stream)
     })
+    fs.writeFileSync(path.join(subDir, 'code'), code, {encoding: 'utf8'})
+    fs.writeFileSync(path.join(subDir, 'transcript'), transcript, {encoding: 'utf8'})
     stream.close()
     progress.stop(true)
   }
@@ -137,7 +142,7 @@ async function doTheMagic () {
 
 // loads the url and parses it, when it's playlist/serie loads the video pages
 // too, and returns an array with the video data
-async function getVideoData () {
+async function getVideoData() {
   try {
     const [, lessonSlug] = /egghead.io\/lessons\/([^\?]*)/.exec(urlValue) || []
     let source = await rp(urlValue)
@@ -151,14 +156,14 @@ async function getVideoData () {
           uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
           json: true
         })
-        const { lessons } = response.list || {lessons: []}
+        const { lessons } = response.list || { lessons: [] }
 
         videoData = lessons
           .filter((lesson) => lesson.slug === lessonSlug)
           .map((lesson) => {
             const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
             const [url, filename] = pattern.exec(lesson.download_url)
-            return {url, filename}
+            return { url, filename }
           })[0]
       } else {
         videoData = await parseLessonPage(source)
@@ -182,23 +187,22 @@ async function getVideoData () {
         lessonURLs.push(match[1])
       }
       success(`Found ${lessonURLs.length} ${(lessonURLs.length) > 1 ? 'lessons' : 'lesson'}`)
+      // if (isPro) {
+      //   const firstLesson = lessonURLs[0]
+      //   const pattern = /egghead.io\/lessons\/(.*)\?/
+      //   const [, lessonSlug] = pattern.exec(firstLesson) || []
+      //   const response = await rp({
+      //     uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
+      //     json: true
+      //   })
+      //   const { lessons } = response.list || { lessons: [] }
 
-      if (isPro) {
-        const firstLesson = lessonURLs[0]
-        const pattern = /egghead.io\/lessons\/(.*)\?/
-        const [, lessonSlug] = pattern.exec(firstLesson) || []
-        const response = await rp({
-          uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
-          json: true
-        })
-        const { lessons } = response.list || {lessons: []}
-
-        return lessons.map((lesson) => {
-          const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
-          const [url, filename] = pattern.exec(lesson.download_url)
-          return {url, filename}
-        })
-      }
+      //   return lessons.map((lesson) => {
+      //     const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
+      //     const [url, filename] = pattern.exec(lesson.download_url)
+      //     return { url, filename }
+      //   })
+      // }
       progress.start('Fetching lesson pages')
       // fetch and process the lessons, start all requests at the same time to save time.
       const promises = lessonURLs.map(processLessonURL)
@@ -219,7 +223,7 @@ async function getVideoData () {
 }
 
 // fetches the lesson page and calls parseLessonPage on it
-function processLessonURL (url) {
+function processLessonURL(url) {
   return new Promise(async (resolve, reject) => {
     rp(url).then(async (source) => {
       const videoData = await parseLessonPage(source)
@@ -237,33 +241,33 @@ function processLessonURL (url) {
 //from: 
 //http://stackoverflow.com/questions/10574520/extract-json-from-text
 function extractJSON(str) {
-    var firstOpen, firstClose, candidate;
-    firstOpen = str.indexOf('{', firstOpen + 1);
+  var firstOpen, firstClose, candidate;
+  firstOpen = str.indexOf('{', firstOpen + 1);
+  do {
+    firstClose = str.lastIndexOf('}');
+    // console.log('firstOpen: ' + firstOpen, 'firstClose: ' + firstClose);
+    if (firstClose <= firstOpen) {
+      return null;
+    }
     do {
-        firstClose = str.lastIndexOf('}');
-        console.log('firstOpen: ' + firstOpen, 'firstClose: ' + firstClose);
-        if(firstClose <= firstOpen) {
-            return null;
-        }
-        do {
-            candidate = str.substring(firstOpen, firstClose + 1);
-            console.log('candidate: ' + candidate);
-            try {
-                var res = JSON.parse(candidate);
-                console.log('...found');
-                return [res, firstOpen, firstClose + 1];
-            }
-            catch(e) {
-                console.log('...failed');
-            }
-            firstClose = str.substr(0, firstClose).lastIndexOf('}');
-        } while(firstClose > firstOpen);
-        firstOpen = str.indexOf('{', firstOpen + 1);
-    } while(firstOpen != -1);
+      candidate = str.substring(firstOpen, firstClose + 1);
+      // console.log('candidate: ' + candidate);
+      try {
+        var res = JSON.parse(candidate);
+        // console.log('...found');
+        return [res, firstOpen, firstClose + 1];
+      }
+      catch (e) {
+        // console.log('...failed');
+      }
+      firstClose = str.substr(0, firstClose).lastIndexOf('}');
+    } while (firstClose > firstOpen);
+    firstOpen = str.indexOf('{', firstOpen + 1);
+  } while (firstOpen != -1);
 }
 
 // parses the lesson page, returns the video data if found.
-async function parseLessonPage (source) {
+async function parseLessonPage(source) {
   const reFile = /<meta itemprop="name" content="([^"]+?)".+?<meta itemprop="contentURL" content="http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin"/
   const result = reFile.exec(source)
   var fileName = ""
@@ -275,13 +279,32 @@ async function parseLessonPage (source) {
     fileName = result[1]
   }
 
+  //get transcript
+  var transcript = []
+  let $ = cheerio.load(source, {
+    xmlMode: true,
+    decodeEntities: true
+  })
+  $("#tab-transcript > div > p").each(function (i, elem) {
+    transcript[i] = $(this).text()
+  })
+
+  //get code link & hints
+  var code = []
+  code.push($("#tab-code strong > a").attr('href'))
+  if ($("#tab-code em").length > 0) {
+    $("#tab-code em").each(function (i, elem) {
+      code.push($(this).text())
+    })
+  }
+
   const re = /<script charset="ISO-8859-1" src="(\/\/fast\.wistia\.com\/embed\/medias\/[a-z0-9]{10}\/metadata\.js)"><\/script>/
-  const reVideo = /"http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin"/
+  const reVideo = /http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin/
   const metaJs = await rp("http:" + re.exec(source)[1])
-  var   mediaJson = JSON.parse(extractJSON(metaJs.slice(metaJs.indexOf('mediaJson'), metaJs.lastIndexOf('mediaJson')))[0])
-  var   videoId = "";
+  var mediaJson = extractJSON(metaJs.slice(metaJs.indexOf('mediaJson'), metaJs.lastIndexOf('mediaJson')))[0]
+  var videoId = "";
   //try to find 'Original file'
-  for (let asset in mediaJson['assets']) {
+  for (let asset of mediaJson['assets']) {
     if (asset['type'] == 'original' && asset['slug'] == 'original') {
       videoId = reVideo.exec(asset['url'])[1]
     }
@@ -292,13 +315,15 @@ async function parseLessonPage (source) {
   else {
     return {
       filename: fileName,
-      url: `https://embed-ssl.wistia.com/deliveries/${videoId}/file.mp4`
+      url: `https://embed-ssl.wistia.com/deliveries/${videoId}/file.mp4`,
+      transcript: transcript.join('\n'),
+      code: code.join('\n')
     }
   }
 }
 
 // creates a directory
-function createOutputDirectoryIfNeeded () {
+function createOutputDirectoryIfNeeded() {
   try {
     const stats = fs.lstatSync(outputDir)
     if (!stats.isDirectory()) {
@@ -313,12 +338,27 @@ function createOutputDirectoryIfNeeded () {
   }
 }
 
+function createSubDirectoryIfNeeded(subDir) {
+  try {
+    const stats = fs.lstatSync(subDir)
+    if (!stats.isDirectory()) {
+      error(`Can't create the output directory '${subDir}' because a file with the same name exists`)
+    }
+  } catch (e) {
+    try {
+      fs.mkdirSync(subDir)
+    } catch (err) {
+      error(`Creating the output directory '${subDir}' failed with error '${err}'`)
+    }
+  }
+}
+
 // helper functions
-function success (message) {
+function success(message) {
   console.log(chalk.green(message))
 }
 
-function error (message, exit = true) {
+function error(message, exit = true) {
   console.log(chalk.red(`Error: ${message}`))
   if (exit) {
     process.exit(1)
@@ -326,7 +366,7 @@ function error (message, exit = true) {
 }
 
 // wraps a promise in another promise that resolves when the promise either resolves or rejects
-function reflect (promise) {
-  return promise.then(x => ({state: 'resolved', value: x}),
-    e => ({state: 'rejected', value: e}))
+function reflect(promise) {
+  return promise.then(x => ({ state: 'resolved', value: x }),
+    e => ({ state: 'rejected', value: e }))
 }
