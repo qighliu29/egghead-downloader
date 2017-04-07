@@ -224,7 +224,7 @@ async function getVideoData() {
 
 // fetches the lesson page and calls parseLessonPage on it
 function processLessonURL(url) {
-  return new Promise(async (resolve, reject) => {
+  return new Promise((resolve, reject) => {
     rp(url).then(async (source) => {
       const videoData = await parseLessonPage(source)
       if (videoData) {
