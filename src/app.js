@@ -10,6 +10,7 @@ const fs = require('fs')
 const inquirer = require('inquirer')
 const cheerio = require('cheerio')
 
+let email
 let urlValue
 let outputDir
 let isPro = false
@@ -20,12 +21,12 @@ const SIGN_IN_URL = 'https://egghead.io/users/sign_in'
 
 program
   .version(pkg.version)
-  .arguments('<url> [output-dir]')
-  .option('-e, --email <email>', 'Account email (only required for Pro accounts)')
+  .arguments('<account> <url> [output-dir]')
   .option('-p, --password [password]', 'Account password (only required for Pro accounts)', true)
   .option('-c, --count', 'Add the number of the video to the filename (only for playlists and series)')
   .option('-f, --force', 'Overwriting existing files')
-  .action((url, output) => {
+  .action((account, url, output) => {
+    email = account
     urlValue = url
     outputDir = output ? path.resolve(output) : process.cwd()
   })
@@ -80,22 +81,19 @@ async function authenticate(email, password) {
 }
 
 async function doTheMagic() {
-  if (program.email) {
-    if (program.password === true) {
-      const { password } = await prompt({
-        type: 'password',
-        name: 'password',
-        message: 'Egghead.io password'
-      })
-      program.password = password
-    }
-    try {
-      await authenticate(program.email, program.password)
-      isPro = true
-      success('Authenticated!')
-    } catch (err) {
-      return error(err)
-    }
+  if (program.password === true) {
+    const { password } = await prompt({
+      type: 'password',
+      name: 'password',
+      message: 'Egghead.io password'
+    })
+    program.password = password
+  }
+  try {
+    await authenticate(email, program.password)
+    success('Authenticated!')
+  } catch (err) {
+    return error(err)
   }
 
   const videos = await getVideoData()
@@ -104,7 +102,7 @@ async function doTheMagic() {
   }
   success(`Found ${videos.length} ${(videos.length) > 1 ? 'videos' : 'video'}`)
 
-  createOutputDirectoryIfNeeded()
+  createDirectoryIfNeeded(outputDir)
 
   const padLength = String(videos.length).length
   const padZeros = '0'.repeat(padLength)
@@ -113,7 +111,7 @@ async function doTheMagic() {
     i++
     let paddedCounter = `${padZeros}${i}`.slice(-padLength)
     let subDir = path.join(outputDir, paddedCounter)
-    createSubDirectoryIfNeeded(subDir)
+    createDirectoryIfNeeded(subDir)
     const p = path.join(subDir, (program.count ? `${paddedCounter}-${filename}` : filename))
     if (!program.force && fileExists(p)) {
       console.log(`File ${paddedCounter}-${filename} already exists, skip`)
@@ -151,30 +149,24 @@ async function getVideoData() {
       let videoData
       success('The URL is a lesson')
 
-      if (isPro) {
-        const response = await rp({
-          uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
-          json: true
-        })
-        const { lessons } = response.list || { lessons: [] }
+      const response = await rp({
+        uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
+        json: true
+      })
+      const { lessons } = response.list || { lessons: [] }
 
-        videoData = lessons
-          .filter((lesson) => lesson.slug === lessonSlug)
-          .map((lesson) => {
-            const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
-            const [url, filename] = pattern.exec(lesson.download_url)
-            return { url, filename }
-          })[0]
-      } else {
-        videoData = await parseLessonPage(source)
-      }
-
-      // process the lesson page
-      if (videoData) {
-        return [videoData]
-      } else {
-        error(`failed to parse the lesson page '${urlValue}'}`)
-      }
+     return Promise.all([lessons
+        .filter((lesson) => lesson.slug === lessonSlug)
+        .map(async (lesson) => {
+          const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
+          const [url, filename] = pattern.exec(lesson.download_url)
+          const source = await rp(lesson.lesson_http_url)
+          const html = cheerio.load(source, {
+            xmlMode: true,
+            decodeEntities: true
+          })
+          return { url, filename, transcript: parseTranscript(html), code: parseCodeURL(html) }
+        })[0]])
     } else {
       let lessonURLs = []
       success('The URL is a playlist or series')
@@ -187,110 +179,33 @@ async function getVideoData() {
         lessonURLs.push(match[1])
       }
       success(`Found ${lessonURLs.length} ${(lessonURLs.length) > 1 ? 'lessons' : 'lesson'}`)
-      // if (isPro) {
-      //   const firstLesson = lessonURLs[0]
-      //   const pattern = /egghead.io\/lessons\/(.*)\?/
-      //   const [, lessonSlug] = pattern.exec(firstLesson) || []
-      //   const response = await rp({
-      //     uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
-      //     json: true
-      //   })
-      //   const { lessons } = response.list || { lessons: [] }
+      const firstLesson = lessonURLs[0]
+      const pattern = /egghead.io\/lessons\/(.*)\?/
+      const [, lessonSlug] = pattern.exec(firstLesson) || []
+      const response = await rp({
+        uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
+        json: true
+      })
+      const { lessons } = response.list || { lessons: [] }
 
-      //   return lessons.map((lesson) => {
-      //     const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
-      //     const [url, filename] = pattern.exec(lesson.download_url)
-      //     return { url, filename }
-      //   })
-      // }
-      progress.start('Fetching lesson pages')
-      // fetch and process the lessons, start all requests at the same time to save time.
-      const promises = lessonURLs.map(processLessonURL)
-      const result = await Promise.all(promises.map(reflect))
-      progress.stop(true)
-      // get the urls that succeded and thos that failed
-      const videoURLs = result.filter(v => (v.state === 'resolved')).map(v => v.value)
-      const failed = result.filter(v => (v.state === 'rejected'))
-      // check if we have some lesson pages that failed (wrong url or paid)
-      if (failed.length) {
-        error(`Failed to parse the following lesson pages: ${failed.map(v => `'${v.value}'`).join(',')}. They might be for pro subscribers only`, false)
-      }
-      return videoURLs
+      return Promise.all(lessons.map(async (lesson) => {
+        const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
+        const [url, filename] = pattern.exec(lesson.download_url)
+        const source = await rp(lesson.lesson_http_url)
+        const html = cheerio.load(source, {
+          xmlMode: true,
+          decodeEntities: true
+        })
+        return { url, filename, transcript: parseTranscript(html), code: parseCodeURL(html) }
+      }))
     }
   } catch (e) {
     error(`fetching the url '${urlValue}' failed!`)
   }
 }
 
-// fetches the lesson page and calls parseLessonPage on it
-function processLessonURL(url) {
-  return new Promise((resolve, reject) => {
-    rp(url).then(async (source) => {
-      const videoData = await parseLessonPage(source)
-      if (videoData) {
-        resolve(videoData)
-      } else {
-        reject(url)
-      }
-    }, () => {
-      reject(url)
-    })
-  })
-}
-
-//from: 
-//http://stackoverflow.com/questions/10574520/extract-json-from-text
-function extractJSON(str) {
-  var firstOpen, firstClose, candidate;
-  firstOpen = str.indexOf('{', firstOpen + 1);
-  do {
-    firstClose = str.lastIndexOf('}');
-    // console.log('firstOpen: ' + firstOpen, 'firstClose: ' + firstClose);
-    if (firstClose <= firstOpen) {
-      return null;
-    }
-    do {
-      candidate = str.substring(firstOpen, firstClose + 1);
-      // console.log('candidate: ' + candidate);
-      try {
-        var res = JSON.parse(candidate);
-        // console.log('...found');
-        return [res, firstOpen, firstClose + 1];
-      }
-      catch (e) {
-        // console.log('...failed');
-      }
-      firstClose = str.substr(0, firstClose).lastIndexOf('}');
-    } while (firstClose > firstOpen);
-    firstOpen = str.indexOf('{', firstOpen + 1);
-  } while (firstOpen != -1);
-}
-
-// parses the lesson page, returns the video data if found.
-async function parseLessonPage(source) {
-  const reFile = /<meta itemprop="name" content="([^"]+?)".+?<meta itemprop="contentURL" content="http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin"/
-  const result = reFile.exec(source)
-  var fileName = ""
-  if (result) {
-    // return {
-    //   filename: result[1],
-    //   url: `https://embed-ssl.wistia.com/deliveries/${result[2]}/file.mp4`
-    // }
-    fileName = result[1]
-  }
-
-  //get transcript
-  var transcript = []
-  let $ = cheerio.load(source, {
-    xmlMode: true,
-    decodeEntities: true
-  })
-  $("#tab-transcript > div > p").each(function (i, elem) {
-    transcript[i] = $(this).text()
-  })
-
-  //get code link & hints
-  var code = []
+function parseCodeURL($) {
+  let code = []
   code.push($("#tab-code strong > a").attr('href'))
   if ($("#tab-code em").length > 0) {
     $("#tab-code em").each(function (i, elem) {
@@ -298,57 +213,30 @@ async function parseLessonPage(source) {
     })
   }
 
-  const re = /<script charset="ISO-8859-1" src="(\/\/fast\.wistia\.com\/embed\/medias\/[a-z0-9]{10}\/metadata\.js)"><\/script>/
-  const reVideo = /http[^"]+?.wistia.com\/deliveries\/(.+?)\.bin/
-  const metaJs = await rp("http:" + re.exec(source)[1])
-  var mediaJson = extractJSON(metaJs.slice(metaJs.indexOf('mediaJson'), metaJs.lastIndexOf('mediaJson')))[0]
-  var videoId = "";
-  //try to find 'Original file'
-  for (let asset of mediaJson['assets']) {
-    if (asset['type'] == 'original' && asset['slug'] == 'original') {
-      videoId = reVideo.exec(asset['url'])[1]
-    }
-  }
-  if (videoId == "") {
-    console.log("No Original file with: " + fileName)
-  }
-  else {
-    return {
-      filename: fileName,
-      url: `https://embed-ssl.wistia.com/deliveries/${videoId}/file.mp4`,
-      transcript: transcript.join('\n'),
-      code: code.join('\n')
-    }
-  }
+  return code.join('\n')
+}
+
+function parseTranscript($) {
+  let transcript = []
+  $("#tab-transcript > div > p").each(function (i, elem) {
+    transcript[i] = $(this).text()
+  })
+
+  return transcript.join('\n')
 }
 
 // creates a directory
-function createOutputDirectoryIfNeeded() {
+function createDirectoryIfNeeded(dir) {
   try {
-    const stats = fs.lstatSync(outputDir)
+    const stats = fs.lstatSync(dir)
     if (!stats.isDirectory()) {
-      error(`Can't create the output directory '${outputDir}' because a file with the same name exists`)
+      error(`Can't create the directory '${dir}' because a file with the same name exists`)
     }
   } catch (e) {
     try {
-      fs.mkdirSync(outputDir)
+      fs.mkdirSync(dir)
     } catch (err) {
-      error(`Creating the output directory '${outputDir}' failed with error '${err}'`)
-    }
-  }
-}
-
-function createSubDirectoryIfNeeded(subDir) {
-  try {
-    const stats = fs.lstatSync(subDir)
-    if (!stats.isDirectory()) {
-      error(`Can't create the output directory '${subDir}' because a file with the same name exists`)
-    }
-  } catch (e) {
-    try {
-      fs.mkdirSync(subDir)
-    } catch (err) {
-      error(`Creating the output directory '${subDir}' failed with error '${err}'`)
+      error(`Creating the directory '${dir}' failed with error '${err}'`)
     }
   }
 }

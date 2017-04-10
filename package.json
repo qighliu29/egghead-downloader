@@ -41,7 +41,7 @@
   },
   "scripts": {
     "clean": "rimraf dist",
-    "build": "rimraf dist && mkdir dist && babel src/app.js -o dist/app.js",
+    "build": "rimraf dist && mkdir dist && babel src/app.js -o dist/app.js --source-maps",
     "lint": "eslint . ./",
     "lint:fix": "npm run lint -- --fix"
   }
