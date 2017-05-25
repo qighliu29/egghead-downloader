@@ -13,7 +13,6 @@ const cheerio = require('cheerio')
 let email
 let urlValue
 let outputDir
-let isPro = false
 const prompt = inquirer.createPromptModule()
 const progress = new PleasantProgress()
 const rp = requestPromise.defaults({ jar: true })
@@ -44,7 +43,7 @@ if (!/egghead.io\/(lessons|series|playlists|courses)\//.test(urlValue)) {
 // await is only supported in functions (with the async keyword)
 doTheMagic()
 
-function fileExists(p) {
+function fileExists (p) {
   try {
     return fs.statSync(p).isFile()
   } catch (e) {
@@ -52,14 +51,14 @@ function fileExists(p) {
   }
 }
 
-async function getCSRFToken() {
+async function getCSRFToken () {
   const body = await rp(SIGN_IN_URL)
   const pattern = /<meta name="csrf-token" content="(.*)" \/>/
   const [, CSRFToken] = pattern.exec(body) || []
   return CSRFToken
 }
 
-async function authenticate(email, password) {
+async function authenticate (email, password) {
   const CSRFToken = await getCSRFToken()
   const options = {
     method: 'POST',
@@ -80,7 +79,7 @@ async function authenticate(email, password) {
   }
 }
 
-async function doTheMagic() {
+async function doTheMagic () {
   if (program.password === true) {
     const { password } = await prompt({
       type: 'password',
@@ -140,13 +139,12 @@ async function doTheMagic() {
 
 // loads the url and parses it, when it's playlist/serie loads the video pages
 // too, and returns an array with the video data
-async function getVideoData() {
+async function getVideoData () {
   try {
     const [, lessonSlug] = /egghead.io\/lessons\/([^\?]*)/.exec(urlValue) || []
     let source = await rp(urlValue)
 
     if (lessonSlug) {
-      let videoData
       success('The URL is a lesson')
 
       const response = await rp({
@@ -155,7 +153,7 @@ async function getVideoData() {
       })
       const { lessons } = response.list || { lessons: [] }
 
-     return Promise.all([lessons
+      return Promise.all([lessons
         .filter((lesson) => lesson.slug === lessonSlug)
         .map(async (lesson) => {
           const pattern = /https:\/\/.*\/lessons\/.*\/(.*)\?.*/
@@ -172,7 +170,7 @@ async function getVideoData() {
       success('The URL is a playlist or series')
 
       // get the urls of the lessions
-      const re = /<h4 class="title"><a href="(https:\/\/egghead.io\/lessons\/.+?)">/g
+      const re = /<a href="(https:\/\/egghead.io\/lessons\/.+?)" class="base no-underline mb3/g
       // regexp in js have no matchAll method or something similiar..
       let match
       while ((match = re.exec(source))) {
@@ -180,7 +178,7 @@ async function getVideoData() {
       }
       success(`Found ${lessonURLs.length} ${(lessonURLs.length) > 1 ? 'lessons' : 'lesson'}`)
       const firstLesson = lessonURLs[0]
-      const pattern = /egghead.io\/lessons\/(.*)\?/
+      const pattern = /egghead.io\/lessons\/(.*)/
       const [, lessonSlug] = pattern.exec(firstLesson) || []
       const response = await rp({
         uri: `https://egghead.io/api/v1/lessons/${lessonSlug}/next_up`,
@@ -204,11 +202,11 @@ async function getVideoData() {
   }
 }
 
-function parseCodeURL($) {
+function parseCodeURL ($) {
   let code = []
-  code.push($("#tab-code strong > a").attr('href'))
-  if ($("#tab-code em").length > 0) {
-    $("#tab-code em").each(function (i, elem) {
+  code.push($('#tab-code strong > a').attr('href'))
+  if ($('#tab-code em').length > 0) {
+    $('#tab-code em').each(function (i, elem) {
       code.push($(this).text())
     })
   }
@@ -216,9 +214,9 @@ function parseCodeURL($) {
   return code.join('\n')
 }
 
-function parseTranscript($) {
+function parseTranscript ($) {
   let transcript = []
-  $("#tab-transcript > div > p").each(function (i, elem) {
+  $('#tab-transcript > div > p').each(function (i, elem) {
     transcript[i] = $(this).text()
   })
 
@@ -226,7 +224,7 @@ function parseTranscript($) {
 }
 
 // creates a directory
-function createDirectoryIfNeeded(dir) {
+function createDirectoryIfNeeded (dir) {
   try {
     const stats = fs.lstatSync(dir)
     if (!stats.isDirectory()) {
@@ -242,19 +240,13 @@ function createDirectoryIfNeeded(dir) {
 }
 
 // helper functions
-function success(message) {
+function success (message) {
   console.log(chalk.green(message))
 }
 
-function error(message, exit = true) {
+function error (message, exit = true) {
   console.log(chalk.red(`Error: ${message}`))
   if (exit) {
     process.exit(1)
   }
-}
-
-// wraps a promise in another promise that resolves when the promise either resolves or rejects
-function reflect(promise) {
-  return promise.then(x => ({ state: 'resolved', value: x }),
-    e => ({ state: 'rejected', value: e }))
 }
